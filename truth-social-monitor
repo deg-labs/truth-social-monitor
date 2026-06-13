@@ -352,7 +352,7 @@ def build_discord_footer(created_at):
     posted_dt = parse_posted_datetime(created_at, EDT)
     return f"Truth Socialポスト {posted_dt.strftime('%H:%M:%S')} EDT/{datetime.now(EDT).strftime('%S')}"
 
-def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False, attach_image=False):
+def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False):
     """Build a Discord embed using the reference payload shape."""
     has_media = bool(media_urls)
     translated_content = normalize_discord_text(translated_content)
@@ -372,8 +372,7 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     }
 
     if has_media and not has_video:
-        image_url = f"attachment://{DISCORD_ATTACHMENT_NAME}" if attach_image else media_urls[0]
-        embed["image"] = {"url": image_url}
+        embed["image"] = {"url": media_urls[0]}
 
     return embed
 
@@ -453,7 +452,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                 
                 subprocess.run(curl_cmd, check=True)
 
-                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video, attach_image=True)
+                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video)
                 payload = build_discord_payload(embed)
                 file_content_type = content_type if content_type.startswith("image/") else "image/jpeg"
 
