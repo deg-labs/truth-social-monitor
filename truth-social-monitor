@@ -240,6 +240,15 @@ def format_posted_at(created_at):
     except Exception:
         return created_at
 
+def parse_posted_datetime(created_at, fallback_tz=JST):
+    """Parse Truth Social created_at and return a timezone-aware datetime."""
+    if not created_at:
+        return datetime.now(fallback_tz)
+    try:
+        return datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone(fallback_tz)
+    except Exception:
+        return datetime.now(fallback_tz)
+
 def normalize_single_line(text):
     """Normalize arbitrary text into a compact single line."""
     if not text:
@@ -339,12 +348,9 @@ def build_discord_description(content, translated_content, url, has_media=False,
     return "[本文なし]"
 
 def build_discord_footer(created_at):
-    """Build a reference-style Discord footer."""
-    try:
-        posted_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone(EDT) if created_at else datetime.now(EDT)
-    except Exception:
-        posted_dt = datetime.now(EDT)
-    return f"Truth Socialポスト {posted_dt.strftime('%H:%M:%S')} EDT/{datetime.now(EDT).strftime('%S')}"
+    """Build a footer using the post time in JST."""
+    posted_dt = parse_posted_datetime(created_at, JST)
+    return f"Truth Socialポスト {posted_dt.strftime('%H:%M:%S')} JST"
 
 def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False, attach_image=False):
     """Build a Discord embed using the reference payload shape."""
@@ -362,7 +368,7 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
         "footer": {
             "text": build_discord_footer(created_at)
         },
-        "timestamp": datetime.now(JST).isoformat()
+        "timestamp": parse_posted_datetime(created_at, JST).isoformat()
     }
 
     if has_media and not has_video:
