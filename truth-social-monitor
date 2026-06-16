@@ -6,7 +6,6 @@ import sys
 import time
 import requests
 import subprocess
-import tempfile
 import hashlib
 import argparse
 import secrets
@@ -43,7 +42,6 @@ GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMI
 DISCORD_EMBED_COLOR = 0x5865f2
 DISCORD_USERNAME = "トランプ発言"
 DISCORD_AVATAR_URL = "https://truthsocial.com/favicon.ico"
-DISCORD_ATTACHMENT_NAME = "thumbnail"
 JST = timezone(timedelta(hours=9))
 EDT = timezone(timedelta(hours=-4), "EDT")
 
@@ -352,7 +350,7 @@ def build_discord_footer(created_at):
     posted_dt = parse_posted_datetime(created_at, EDT)
     return f"Truth Socialポスト {posted_dt.strftime('%H:%M:%S')} EDT/{datetime.now(EDT).strftime('%S')}"
 
-def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False, attach_image=False):
+def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False):
     """Build a Discord embed using the reference payload shape."""
     has_media = bool(media_urls)
     translated_content = normalize_discord_text(translated_content)
@@ -372,8 +370,7 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     }
 
     if has_media and not has_video:
-        image_url = f"attachment://{DISCORD_ATTACHMENT_NAME}" if attach_image else media_urls[0]
-        embed["image"] = {"url": image_url}
+        embed["image"] = {"url": media_urls[0]}
 
     return embed
 
@@ -436,11 +433,8 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                 return
 
             # if the file is small enough, download and send it
-            tmp_file_path = None
+            tmp_file_path = f"/tmp/truthsocial_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                    tmp_file_path = tmp_file.name
-
                 curl_cmd = [
                     CURL_PATH,
                     "-s",
@@ -453,18 +447,11 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                 
                 subprocess.run(curl_cmd, check=True)
 
-                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video, attach_image=True)
+                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video)
                 payload = build_discord_payload(embed)
-                file_content_type = content_type if content_type.startswith("image/") else "image/jpeg"
 
                 with open(tmp_file_path, 'rb') as image_file:
-                    files = {
-                        DISCORD_ATTACHMENT_NAME: (
-                            DISCORD_ATTACHMENT_NAME,
-                            image_file,
-                            file_content_type
-                        )
-                    }
+                    files = {'file': (os.path.basename(tmp_file_path), image_file, 'image/jpeg')}
                     
                     response = session.post(
                         DISCORD_WEBHOOK_URL,
@@ -479,7 +466,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                 post_json_payload()
             
             finally:
-                if tmp_file_path and os.path.exists(tmp_file_path):
+                if os.path.exists(tmp_file_path):
                     try:
                         os.unlink(tmp_file_path)
                     except Exception as e:
