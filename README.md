@@ -1,3 +1,21 @@
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
+
+- [Truth Social Monitor](#truth-social-monitor)
+  - [Features](#features)
+  - [Requirements](#requirements)
+  - [Setup](#setup)
+  - [Usage](#usage)
+    - [Run Once](#run-once)
+    - [Run in Daemon Mode](#run-in-daemon-mode)
+    - [Silent Mode](#silent-mode)
+    - [Docker Compose](#docker-compose)
+    - [Command-line Arguments](#command-line-arguments)
+  - [How It Works](#how-it-works)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 # Truth Social Monitor
 
 This script monitors Donald Trump's account on Truth Social for new posts, translates them into Japanese, and sends them to a Discord channel via a webhook.
