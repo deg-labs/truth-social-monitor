@@ -6,6 +6,11 @@ services:
     volumes:
       - truth-social-cache:/app/cache
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 volumes:
   truth-social-cache:
