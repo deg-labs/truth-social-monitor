@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib.parse import urlparse
 
 # global silent mode flag
 SILENT_MODE = False
@@ -185,6 +186,19 @@ def cleanup_cache():
     except Exception as e:
         print_log(f"Error in cache cleanup: {e}")
 
+def is_allowed_media_url(url):
+    """Return True only for http(s) URLs hosted on the truthsocial.com media allowlist."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "truthsocial.com" or host.endswith(".truthsocial.com")
+
 def is_video_file(url):
     """check if the URL points to a video file based on its extension or MIME type."""
     video_extensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', '.m4v']
@@ -204,10 +218,19 @@ def is_video_file(url):
     return False
 
 def get_file_info(url):
-    """Get file size and type from the URL using HEAD request."""
+    """Get file size and type from the URL using a HEAD request."""
+    if not is_allowed_media_url(url):
+        print_error(f"Media URL not on allowlist, skipping: {url}")
+        return 0, False, 'unknown'
     try:
-        # get file size and type using HEAD request
-        response = requests.head(url, timeout=10, allow_redirects=True)
+        # get file size and type using HEAD request (no auto redirect to allow target validation)
+        response = requests.head(url, timeout=10, allow_redirects=False)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("location")
+            if not location or not is_allowed_media_url(location):
+                print_error(f"Redirect target not on allowlist, skipping: {location}")
+                return 0, False, 'unknown'
+            response = requests.head(location, timeout=10, allow_redirects=False)
         content_length = response.headers.get('content-length')
         content_type = response.headers.get('content-type', '')
         
@@ -409,6 +432,10 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 
+    # Filter media URLs against the allowlist to prevent SSRF / arbitrary protocol access
+    if media_urls:
+        media_urls = [url for url in media_urls if is_allowed_media_url(url)]
+
     # Determine if the post has media or video
     has_media = bool(media_urls)
     has_video = False
@@ -446,6 +473,8 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                     CURL_PATH,
                     "-s",
                     "-L",
+                    "--proto", "=https",
+                    "--proto-redir", "=https",
                     "-o", tmp_file_path,
                     "--connect-timeout", "30",
                     "--max-time", "60",
