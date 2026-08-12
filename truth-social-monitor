@@ -308,6 +308,16 @@ def normalize_discord_text(text):
     text = re.sub(r'\r\n?', '\n', text).strip()
     return re.sub(r'\n{3,}', '\n\n', text)
 
+def escape_discord_markdown(text):
+    """Escape Discord markdown syntax that could be used for link/code injection in embeds."""
+    if not text:
+        return ""
+    text = text.replace("\\", "\\\\")
+    text = text.replace("`", "\\`")
+    text = text.replace("[", "\\[").replace("]", "\\]")
+    text = text.replace("(", "\\(").replace(")", "\\)")
+    return text
+
 def format_posted_at(created_at):
     """Format Truth Social created_at into a compact JST timestamp."""
     if not created_at:
@@ -442,10 +452,17 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     content = normalize_discord_text(content)
     description = build_discord_description(content, translated_content, url, has_media, has_video)
 
+    title = build_discord_title(content, translated_content, has_media, has_video)
+    escaped_title = truncate_discord_text(escape_discord_markdown(title), 80)
+    escaped_description = truncate_discord_text(
+        escape_discord_markdown(description),
+        4096,
+    )
+
     embed = {
-        "title": build_discord_title(content, translated_content, has_media, has_video),
+        "title": escaped_title,
         "url": url,
-        "description": truncate_discord_text(description, 4096),
+        "description": escaped_description,
         "color": DISCORD_EMBED_COLOR,
         "fields": [],
         "footer": {
