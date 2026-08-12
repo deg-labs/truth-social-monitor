@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 # global silent mode flag
 SILENT_MODE = False
@@ -194,7 +194,7 @@ def is_allowed_media_url(url):
         parsed = urlparse(url)
     except ValueError:
         return False
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme != "https":
         return False
     host = (parsed.hostname or "").lower()
     return host == "truthsocial.com" or host.endswith(".truthsocial.com")
@@ -223,14 +223,23 @@ def get_file_info(url):
         print_error(f"Media URL not on allowlist, skipping: {url}")
         return 0, False, 'unknown'
     try:
-        # get file size and type using HEAD request (no auto redirect to allow target validation)
-        response = requests.head(url, timeout=10, allow_redirects=False)
-        if response.status_code in (301, 302, 303, 307, 308):
+        current_url = url
+        response = None
+        for _ in range(5):
+            response = requests.head(current_url, timeout=10, allow_redirects=False)
+            if response.status_code not in (301, 302, 303, 307, 308):
+                break
             location = response.headers.get("location")
-            if not location or not is_allowed_media_url(location):
-                print_error(f"Redirect target not on allowlist, skipping: {location}")
+            next_url = urljoin(current_url, location or "")
+            if not is_allowed_media_url(next_url):
+                print_error(f"Redirect target not on allowlist, skipping: {next_url}")
                 return 0, False, 'unknown'
-            response = requests.head(location, timeout=10, allow_redirects=False)
+            current_url = next_url
+        else:
+            print_error(f"Too many redirects while inspecting media URL: {url}")
+            return 0, False, 'unknown'
+        if response is None:
+            return 0, False, 'unknown'
         content_length = response.headers.get('content-length')
         content_type = response.headers.get('content-type', '')
         
@@ -238,10 +247,41 @@ def get_file_info(url):
         is_video = content_type.startswith('video/') or is_video_file(url)
         
         return file_size, is_video, content_type
-    except Exception as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
         print_error(f"File information acquisition failure: {e}")
         # fallback to default values
         return 0, is_video_file(url), 'unknown'
+
+def download_media(url, output_path, max_bytes):
+    """Download media while validating every redirect target."""
+    current_url = url
+    with requests.Session() as session:
+        for _ in range(5):
+            if not is_allowed_media_url(current_url):
+                raise ValueError(f"Media URL not on allowlist: {current_url}")
+            response = session.get(
+                current_url,
+                timeout=(10, 60),
+                allow_redirects=False,
+                stream=True,
+            )
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location")
+                response.close()
+                current_url = urljoin(current_url, location or "")
+                continue
+            response.raise_for_status()
+            total = 0
+            with open(output_path, "wb") as output:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"Media exceeds {max_bytes} bytes")
+                    output.write(chunk)
+            return
+        raise ValueError(f"Too many redirects while downloading media: {url}")
 
 def truncate_discord_text(text, limit):
     """Trim text to fit Discord embed limits."""
@@ -469,19 +509,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
             # if the file is small enough, download and send it
             tmp_file_path = f"/tmp/truthsocial_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
             try:
-                curl_cmd = [
-                    CURL_PATH,
-                    "-s",
-                    "-L",
-                    "--proto", "=https",
-                    "--proto-redir", "=https",
-                    "-o", tmp_file_path,
-                    "--connect-timeout", "30",
-                    "--max-time", "60",
-                    media_urls[0]
-                ]
-                
-                subprocess.run(curl_cmd, check=True)
+                download_media(media_urls[0], tmp_file_path, 8 * 1024 * 1024)
 
                 embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video)
                 payload = build_discord_payload(embed)
@@ -497,7 +525,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
                     response.raise_for_status()
                     print_log("Post with an image has been sent to Discord")
 
-            except (subprocess.CalledProcessError, OSError) as e:
+            except (requests.exceptions.RequestException, OSError, ValueError) as e:
                 print_log(f"Image download failed: {e} - sending link only")
                 post_json_payload()
             
