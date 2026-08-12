@@ -374,10 +374,17 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     content = normalize_discord_text(content)
     description = build_discord_description(content, translated_content, url, has_media, has_video)
 
+    title = build_discord_title(content, translated_content, has_media, has_video)
+    escaped_title = truncate_discord_text(escape_discord_markdown(title), 80)
+    escaped_description = truncate_discord_text(
+        escape_discord_markdown(description),
+        4096,
+    )
+
     embed = {
-        "title": escape_discord_markdown(build_discord_title(content, translated_content, has_media, has_video)),
+        "title": escaped_title,
         "url": url,
-        "description": escape_discord_markdown(truncate_discord_text(description, 4096)),
+        "description": escaped_description,
         "color": DISCORD_EMBED_COLOR,
         "fields": [],
         "footer": {
