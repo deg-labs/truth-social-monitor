@@ -1,0 +1,85 @@
+name: deploy-to-gce
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - prd
+        default: dev
+
+concurrency:
+  group: >-
+    deploy-${{ github.event_name == 'pull_request' && github.event.label.name ||
+    github.event_name == 'workflow_dispatch' && inputs.environment || 'prd' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    if: |
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' &&
+       (github.event.label.name == 'dev' || github.event.label.name == 'prd'))
+    uses: deg-labs/github-workflows/.github/workflows/gce-deploy.yml@main
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+    with:
+      enforce_deploy_team: true
+      deploy_team_slug: deg-develop
+      environment_name: >-
+        ${{
+          github.event_name == 'pull_request' && github.event.label.name ||
+          github.event_name == 'workflow_dispatch' && inputs.environment ||
+          'prd'
+        }}
+      app_env_secret: >-
+        ${{
+          (github.event_name == 'pull_request' && github.event.label.name == 'dev' ||
+           github.event_name == 'workflow_dispatch' && inputs.environment == 'dev') && 'DEV_APP_ENV' ||
+          'PRD_APP_ENV'
+        }}
+      discord_webhook_secret: >-
+        ${{
+          (github.event_name == 'pull_request' && github.event.label.name == 'dev' ||
+           github.event_name == 'workflow_dispatch' && inputs.environment == 'dev') && 'DEV_DISCORD_WEBHOOK_URL' ||
+          'PRD_DISCORD_WEBHOOK_URL'
+        }}
+      artifact_excludes: |
+        __pycache__
+        cache
+        tests
+      additional_upload_files: |
+        .env
+      prepare_command: |
+        set -euo pipefail
+        {
+          printf 'DISCORD_WEBHOOK_URL=%s\n' "${DISCORD_WEBHOOK_URL}"
+          printf '%s\n' "${APP_ENV}"
+        } > .env
+      remote_deploy_command: |
+        set -e
+        TARGET_DIR='/opt/apps/truth-social-monitor'
+        sudo rm -rf "$TARGET_DIR"
+        sudo mkdir -p "$TARGET_DIR"
+        sudo chown -R "$(id -u):$(id -g)" "$TARGET_DIR"
+        tar -xzf ~/app.tar.gz -C "$TARGET_DIR"
+        mv -f ~/.env "$TARGET_DIR/.env"
+        cd "$TARGET_DIR"
+        sudo docker compose down
+        sudo docker compose up -d --build
+        sudo docker image prune -f || true
