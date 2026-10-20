@@ -48,6 +48,10 @@ If you do not configure Gemini API, it will be handled by MyMemory API(Free API)
     - Uses the Gemini API for high-quality translations if an API key is provided.
     - Falls back to the free MyMemory API if the Gemini API is not configured or fails.
 - **Discord Notifications**: Sends card-style Discord embed notifications to a specified webhook.
+- **Quote Posts**: Detects quotes using the outer `quote_id`, then the embedded `quote`, with a `quote-inline` HTML fallback. Notifications separate the author's comment from the quoted author's text and source link. Quotes remain eligible when reply or boost flags are also present.
+    - Translates the comment and quoted text separately, removing the display-only `RT:` span.
+    - Uses quoted media when the quoting post has no media of its own.
+    - If the source is unavailable, still sends the quote with its source link or status ID.
 - **Media Handling**:
     - For text posts, it shows translated text, post link, and original text in a card.
     - For image posts, it shows the image in the card and attaches the image directly to the Discord message (if under 8MB) or sends a link.
@@ -167,10 +171,26 @@ crontab example:
 ## How It Works
 
 1.  **Fetch**: The script uses a `curl_chrome116` subprocess to fetch the latest statuses from the Truth Social API, bypassing browser checks.
-2.  **Filter**: It filters for original posts (not replies or re-posts) from the target user (`@realDonaldTrump`). by default reposts(URL Only posts) notify discord, but there is filtering in the script so change this if necessary.
+2.  **Filter**: It accepts original posts and quote posts from the target user (`@realDonaldTrump`). Replies and boosts without quote metadata are excluded. A plain status link outside a `quote-inline` span does not identify a quote.
 3.  **Cache Check**: For each post, it generates a unique hash and checks if a corresponding file exists in the `./cache` directory. If it exists, the post is considered old and is skipped.
 4.  **Process & Translate**: If a post is new:
     - The HTML is stripped from the content.
     - The content is sent to the `translate_with_gemini` function. If a `GEMINI_API_KEY` is present, it uses the Gemini API. Otherwise, it falls back to `translate_with_free_service` (MyMemory API).
 5.  **Notify**: A message is constructed and sent to the configured Discord webhook. It handles text, images, and videos differently to provide the best notification format.
 6.  **Save Cache**: After a post is successfully processed, its hash is saved to a file in the `./cache` directory to prevent reprocessing. The cache is automatically pruned to keep only the 30 most recent entries.
+
+Run the quote regression tests without sending Discord notifications or translation requests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+`tests/fixtures/quotes.json` contains selected public fields retrieved from the three example statuses on 2026-10-20 with `/bin/curl-impersonate --impersonate chrome150`. For example:
+
+```bash
+/bin/curl-impersonate --impersonate chrome150 --silent --show-error --fail \
+  --compressed --connect-timeout 15 --max-time 40 \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'referer: https://truthsocial.com/@realDonaldTrump' \
+  'https://truthsocial.com/api/v1/statuses/117471494164657339'
+```

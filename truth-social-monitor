@@ -11,10 +11,11 @@ import hashlib
 import argparse
 import secrets
 from datetime import datetime, timezone, timedelta
+from html.parser import HTMLParser
 from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote as encode_url, urljoin, urlparse
 
 # global silent mode flag
 SILENT_MODE = False
@@ -22,7 +23,15 @@ SILENT_MODE = False
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[],
 )
+stdout_handler = logging.StreamHandler(sys.stdout)
+stdout_handler.addFilter(lambda record: record.levelno < logging.WARNING)
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setLevel(logging.WARNING)
+for handler in (stdout_handler, stderr_handler):
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
 logger = logging.getLogger(__name__)
 
 def print_log(message):
@@ -445,7 +454,7 @@ def build_discord_footer(created_at):
     posted_dt = parse_posted_datetime(created_at, EDT)
     return f"Truth Socialポスト {posted_dt.strftime('%H:%M:%S')} EDT/{datetime.now(EDT).strftime('%S')}"
 
-def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False):
+def build_discord_embed(content, translated_content, url, created_at=None, media_urls=None, has_video=False, quote=None):
     """Build a Discord embed using the reference payload shape."""
     has_media = bool(media_urls)
     translated_content = normalize_discord_text(translated_content)
@@ -453,6 +462,8 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     description = build_discord_description(content, translated_content, url, has_media, has_video)
 
     title = build_discord_title(content, translated_content, has_media, has_video)
+    if quote is not None:
+        title = f"引用ポスト: {title}"
     escaped_title = truncate_discord_text(escape_discord_markdown(title), 80)
     escaped_description = truncate_discord_text(
         escape_discord_markdown(description),
@@ -474,6 +485,27 @@ def build_discord_embed(content, translated_content, url, created_at=None, media
     if has_media and not has_video:
         embed["image"] = {"url": media_urls[0]}
 
+    if quote is not None:
+        author = quote.get("author") or "投稿者不明"
+        source_text = quote.get("translated_content") or quote.get("content")
+        if not source_text:
+            source_text = "メディア投稿です。" if quote.get("media_urls") else (
+                "[本文なし]" if quote.get("available") else "引用元の本文を取得できません。"
+            )
+        text = escape_discord_markdown(source_text)
+        reference = f"\n[引用元を見る]({quote['url']})" if quote.get("url") else ""
+        if not reference and quote.get("id"):
+            reference = f"\n引用元ステータスID: {escape_discord_markdown(str(quote['id'])[:128])}"
+        embed["fields"].append({
+            "name": truncate_discord_text(escape_discord_markdown(f"引用元: {author}"), 256),
+            "value": truncate_discord_text(text, 1024 - len(reference)) + reference,
+            "inline": False,
+        })
+        # Discord caps the combined text in an embed at 6000 characters.
+        field = embed["fields"][0]
+        remaining = 6000 - len(escaped_title) - len(embed["footer"]["text"]) - len(field["name"]) - len(field["value"])
+        embed["description"] = truncate_discord_text(escaped_description, remaining)
+
     return embed
 
 def build_discord_payload(embed):
@@ -484,7 +516,7 @@ def build_discord_payload(embed):
         "embeds": [embed]
     }
 
-def send_to_discord(content, translated_content, url, media_urls=None, created_at=None):
+def send_to_discord(content, translated_content, url, media_urls=None, created_at=None, quote=None):
     """Send post content to Discord via webhook."""
     if not DISCORD_WEBHOOK_URL:
         print_error("DISCORD_WEBHOOK_URL not set")
@@ -517,7 +549,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
         print_log(f"Media information: Size={file_size/1024/1024:.1f}MB, Video={has_video}, Type={content_type}")
 
     def post_json_payload():
-        embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video)
+        embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video, quote)
         payload = build_discord_payload(embed)
         response = session.post(DISCORD_WEBHOOK_URL, json=payload)
         response.raise_for_status()
@@ -543,7 +575,7 @@ def send_to_discord(content, translated_content, url, media_urls=None, created_a
             try:
                 download_media(media_urls[0], tmp_file_path, 8 * 1024 * 1024)
 
-                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video)
+                embed = build_discord_embed(content, translated_content, url, created_at, media_urls, has_video, quote)
                 payload = build_discord_payload(embed)
 
                 with open(tmp_file_path, 'rb') as image_file:
@@ -749,6 +781,79 @@ def clean_html(raw_html):
         return ""
     return re.sub('<.*?>', '', raw_html)
 
+class QuoteInlineParser(HTMLParser):
+    """Separate Truth Social's display-only quote span from the author's text."""
+
+    def __init__(self, content):
+        super().__init__(convert_charrefs=False)
+        self.body = []
+        self.quote = []
+        self.quote_depth = 0
+        self.feed(content or "")
+        self.close()
+
+    def append(self, text):
+        (self.quote if self.quote_depth else self.body).append(text)
+
+    def handle_starttag(self, tag, attrs):
+        classes = dict(attrs).get("class") or ""
+        if tag == "span" and (self.quote_depth or "quote-inline" in classes.split()):
+            self.quote_depth += 1
+        self.append(self.get_starttag_text())
+
+    def handle_startendtag(self, tag, attrs):
+        self.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag):
+        self.append(f"</{tag}>")
+        if tag == "span" and self.quote_depth:
+            self.quote_depth -= 1
+
+    def handle_data(self, data):
+        self.append(data)
+
+    def handle_entityref(self, name):
+        self.append(f"&{name};")
+
+    def handle_charref(self, name):
+        self.append(f"&#{name};")
+
+
+def get_quote_info(post, parsed_content=None):
+    """Resolve the outer quote, preferring quote_id over embedded or HTML data."""
+    parsed_content = parsed_content or QuoteInlineParser(post.get("content"))
+    inline_match = re.search(
+        r'https://truthsocial\.com/users/[^/\s<>"\']+/statuses/(\d+)',
+        "".join(parsed_content.quote),
+    )
+    embedded = post.get("quote")
+    quoted = embedded if isinstance(embedded, dict) else {}
+    quote_id = post.get("quote_id") or quoted.get("id") or (inline_match.group(1) if inline_match else None)
+    if not quote_id and embedded is None:
+        return None
+    quote_id = str(quote_id) if quote_id else None
+    # Never attribute an embedded status or inline link to a different quote_id.
+    if quoted.get("id") and quote_id != str(quoted["id"]):
+        quoted = {}
+    quoted_content = QuoteInlineParser(quoted.get("content"))
+    account = quoted.get("account") or {}
+    url = quoted.get("url") or ""
+    if not is_allowed_media_url(url):
+        url = ""
+    if not url and inline_match and inline_match.group(1) == quote_id:
+        url = inline_match.group(0)
+    url = encode_url(url, safe=":/?=&%#@+;,")
+    if len(url) > 512:
+        url = ""
+    return {
+        "id": quote_id,
+        "url": url,
+        "author": account.get("display_name") or account.get("acct") or account.get("username") or "",
+        "available": bool(quoted),
+        "content": clean_html("".join(quoted_content.body)).strip(),
+        "media_urls": [media["url"] for media in quoted.get("media_attachments", []) if media.get("url")],
+    }
+
 def is_target_user(post):
     """check if the post is from the target user"""
     try:
@@ -757,8 +862,11 @@ def is_target_user(post):
         has_other_user_link = bool(re.search(r'https://truthsocial\.com/users/[^/]+/statuses/\d+', content))
         return (
             account.get("username") == f"{TARGET_USERNAME}"
-            and post.get("in_reply_to_id") is None
-            and not has_other_user_link
+            and (get_quote_info(post) is not None or (
+                post.get("in_reply_to_id") is None
+                and not post.get("reblog")
+                and not has_other_user_link
+            ))
         )
     except Exception:
         return False
@@ -789,8 +897,15 @@ def process_posts():
             if not is_new_post(post_id, created_at):
                 continue
                 
-            content = clean_html(post.get("content", "")).strip()
+            parsed_content = QuoteInlineParser(post.get("content"))
+            quote = get_quote_info(post, parsed_content)
+            content = clean_html("".join(parsed_content.body)).strip()
             media_urls = [media.get("url", "") for media in post.get("media_attachments", []) if media.get("url")]
+            if quote is not None:
+                if quote["content"] and not is_url_only_post(quote["content"]):
+                    quote["translated_content"] = translate_with_gemini(quote["content"])
+                if not media_urls:
+                    media_urls = quote["media_urls"]
             post_url = post.get("url", "")
             
             if not post_url:
@@ -808,7 +923,7 @@ def process_posts():
                 translated_content = "(No translation required)"
 
             # send to Discord
-            send_to_discord(content, translated_content, post_url, media_urls, created_at)
+            send_to_discord(content, translated_content, post_url, media_urls, created_at, quote=quote)
             
             # save to cache
             save_to_cache(post_id, created_at)
