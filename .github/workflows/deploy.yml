@@ -13,9 +13,9 @@ on:
         required: true
         type: choice
         options:
-          - stg
+          - dev
           - prd
-        default: stg
+        default: dev
 
 concurrency:
   group: >-
@@ -32,7 +32,7 @@ jobs:
     if: |
       github.event_name != 'pull_request' ||
       (github.event.action == 'labeled' &&
-       (github.event.label.name == 'stg' || github.event.label.name == 'prd'))
+       (github.event.label.name == 'dev' || github.event.label.name == 'prd'))
     uses: deg-labs/github-workflows/.github/workflows/gce-deploy.yml@main
     permissions:
       contents: read
@@ -49,14 +49,14 @@ jobs:
         }}
       app_env_secret: >-
         ${{
-          (github.event_name == 'pull_request' && github.event.label.name == 'stg' ||
-           github.event_name == 'workflow_dispatch' && inputs.environment == 'stg') && 'STG_APP_ENV' ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'dev' ||
+           github.event_name == 'workflow_dispatch' && inputs.environment == 'dev') && 'DEV_APP_ENV' ||
           'PRD_APP_ENV'
         }}
       discord_webhook_secret: >-
         ${{
-          (github.event_name == 'pull_request' && github.event.label.name == 'stg' ||
-           github.event_name == 'workflow_dispatch' && inputs.environment == 'stg') && 'STG_DISCORD_WEBHOOK_URL' ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'dev' ||
+           github.event_name == 'workflow_dispatch' && inputs.environment == 'dev') && 'DEV_DISCORD_WEBHOOK_URL' ||
           'PRD_DISCORD_WEBHOOK_URL'
         }}
       artifact_excludes: |
